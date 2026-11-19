@@ -1,7 +1,19 @@
 import * as THREE from "three";
+import type { DoaData } from "../types";
 
 export const DOA_ACTIVE_TIMEOUT_MS = 1200;
 
+export interface DirectionStep {
+  direction: THREE.Vector3;
+  hasFreshDOA: boolean;
+  hasExternalDOA: boolean;
+  volume: number;
+}
+
+/**
+ * Smooths incoming DOA samples so the 3D motion looks continuous.
+ * If no data arrives for `staleTimeoutMs`, the volume fades back to 0.
+ */
 export function createDirectionController({
   directionSmoothFactor = 0.18,
   volumeSmoothFactor = 0.2,
@@ -15,27 +27,21 @@ export function createDirectionController({
   let hasExternalDOA = false;
   let lastDOATimeMs = 0;
 
-  function updateFromData(data) {
-    if (!data || typeof data !== "object") return false;
-    const x = Number(data.x);
-    const y = Number(data.y);
-    const z = Number(data.z);
-    if (![x, y, z].every((num) => Number.isFinite(num))) return false;
+  function updateFromData(data: DoaData): boolean {
+    const { x, y, z } = data;
+    if (![x, y, z].every(Number.isFinite)) return false;
 
     targetDirection.set(x, y, z);
     if (targetDirection.lengthSq() < 1e-8) return false;
 
-    const rawVolume = Number(data.volume);
-    const rawStrength = Number(data.strength);
-    const signalLevel = Number.isFinite(rawVolume) ? rawVolume : rawStrength;
-    targetVolume = Number.isFinite(signalLevel) ? Math.max(0, signalLevel) : 0;
+    targetVolume = Number.isFinite(data.volume) ? Math.max(0, data.volume as number) : 0;
     targetDirection.normalize();
     hasExternalDOA = true;
     lastDOATimeMs = Date.now();
     return true;
   }
 
-  function getDirectionStep() {
+  function getDirectionStep(): DirectionStep {
     const hasFreshDOA = hasExternalDOA && Date.now() - lastDOATimeMs < staleTimeoutMs;
 
     if (hasFreshDOA) {

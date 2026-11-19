@@ -1,6 +1,5 @@
-const crypto = require("crypto");
-const http = require("http");
-const { URL } = require("url");
+import crypto from "node:crypto";
+import http from "node:http";
 
 const PORT = 9000;
 const INTERVAL_MS = 500;
@@ -69,7 +68,7 @@ function encodeTextFrame(text) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
   if (url.pathname === "/") {
     res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
     res.end("Mock DOA WebSocket server is running.\n");
