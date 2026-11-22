@@ -1,150 +1,115 @@
 # Furhat DOA 3D Visualization
 
-This project is a browser-based interface for visualizing sound source direction from a DOA (Direction of Arrival) pipeline. It connects to a WebSocket server, receives real-time direction data, and renders the result as interactive 3D visuals with Three.js.
+A browser tool that shows where a sound is coming from, in real time. It receives DOA (Direction of Arrival) data from a four-microphone array over a WebSocket and renders it as an interactive 3D scene.
 
-The main purpose of the project is to bridge two parts of the system:
+Built with **React + TypeScript** for the UI, **Three.js** for the 3D scene and **Vite** as the dev server and bundler.
 
-- a DOA estimation backend that produces direction data
-- a frontend visualization layer that makes the direction and volume easier to inspect
+## Quick start
 
-The interface was designed for fast testing and demo use. It shows connection status, the latest incoming DOA payload, visualization mode switching, and style controls for selected modes.
+You need Node.js 18 or newer.
 
-## What the project does
+```bash
+npm install        # install dependencies (once)
+npm run mock       # terminal 1: start the mock DOA server on ws://localhost:9000
+npm run dev        # terminal 2: start the app on http://localhost:8080
+```
 
-The webpage listens for DOA data from a WebSocket server and updates a 3D visualization in real time. The current interface supports four rendering modes:
+Then open <http://localhost:8080/?ws=ws://localhost:9000>.
 
-- `faces`: a filled orb with wire overlay and directional deformation
-- `wireframe`: a lighter mesh-based orb view
-- `arrow`: a directional arrow representation
-- `furhat`: a Furhat model that reacts to DOA direction and volume
+| Command | What it does |
+| --- | --- |
+| `npm run dev` | Dev server with hot reload |
+| `npm run build` | Type-check with TypeScript, then build to `dist/` |
+| `npm run preview` | Serve the built `dist/` folder |
+| `npm run typecheck` | Type-check only |
+| `npm run mock` | Mock WebSocket server that sends random DOA data |
 
-The frontend accepts DOA messages containing direction and optional volume. Direction is normalized before rendering, while volume is used as the response magnitude for the visual effect.
+### URL parameters
 
-Accepted payload shape:
+| Parameter | Example | Default |
+| --- | --- | --- |
+| `ws` | `?ws=ws://localhost:9000` | `ws://192.168.1.217:8765` (the real DOA backend) |
+| `orbStyle` | `?orbStyle=arrow` | `faces` |
+
+## Data format
+
+Each WebSocket message is one JSON object. Direction is normalized before rendering, and volume drives the size of the effect.
 
 ```json
-{
-  "x": 0.82,
-  "y": 0.05,
-  "z": 0.56,
-  "volume": 180.4
-}
+{ "x": 0.82, "y": 0.05, "z": 0.56, "volume": 180.4 }
 ```
 
-For backward compatibility, the frontend also accepts `strength`, but the current visualization pipeline is intended to use `volume`.
+`strength` is still accepted in place of `volume` for backward compatibility.
 
-## Project structure
+## Features
 
-- `index.html`: main page layout and UI
-- `app.js`: WebSocket connection, payload parsing, UI interaction
-- `sceneSetup.js`: shared Three.js scene, camera, lighting, and speaker model setup
-- `doaController.js`: smoothing and stale-data fallback logic
-- `faces.js`: faces orb renderer
-- `wireframe.js`: wireframe orb renderer
-- `arrow.js`: arrow renderer
-- `furhat.js`: Furhat model renderer
-- `mock-ws-server.js`: local mock WebSocket server for frontend testing
+- Live connection status with auto-reconnect every 2 seconds
+- Latest payload and a table of recent samples (time, azimuth, volume)
+- Four visualization modes, switched instantly without reloading the page:
+  - `faces`: a filled orb with exploded faces that spikes towards the sound
+  - `wireframe`: a lighter mesh orb
+  - `arrow`: an arrow that points to the sound and grows with volume
+  - `furhat`: the Furhat robot head turns towards the sound
+- Live style controls (colours, opacity, explode amount, arrow length) with reset
 
-## How to run
+## Architecture
 
-This project does not require a frontend build step. It only needs a static file server and, optionally, a WebSocket data source.
-
-### 1. Start a static server
-
-From the project root:
-
-```bash
-cd <repo-root>
-python3 -m http.server 8080
+```
+index.html                  just <div id="root"> and the entry script
+src/
+  main.tsx                  mounts <App /> into the page
+  App.tsx                   owns shared state (mode, styles) and lays out the page
+  types.ts                  shared TypeScript types (DoaData, OrbMode, OrbRenderer, ...)
+  config.ts                 defaults, URL parameters, message parsing
+  styles.css
+  hooks/
+    useDoaSocket.ts         WebSocket connection + reconnect as a custom React hook
+  components/               React UI
+    ControlPanel.tsx        left panel layout
+    ConnectionStatus.tsx    endpoint, status dot, message count
+    LatestData.tsx          latest payload as JSON
+    DataHistory.tsx         table of recent samples
+    ModeSwitch.tsx          the four mode buttons
+    StyleControls.tsx       colour and slider controls per mode
+    controls.tsx            reusable ColorControl / SliderControl
+    VisualizerStage.tsx     bridge between React and Three.js
+  three/                    plain Three.js, no React here
+    sceneSetup.ts           scene, camera, lights, render loop, dispose
+    doaController.ts        smoothing and stale-data fade-out
+    renderers/
+      index.ts              mode -> renderer factory
+      faces.ts, wireframe.ts, arrow.ts, furhat.ts
+      orbUtils.ts           shared spike/opacity helpers
+public/                     3D models and logo, served as static files
+mock-ws-server.js           dependency-free mock WebSocket server (Node.js)
 ```
 
-Then open:
+### How data flows
 
-```text
-http://localhost:8080
+```
+WebSocket ──> useDoaSocket ──┬──> onData ──> VisualizerStage.pushData ──> Three.js renderer.update()
+                             │                  (direct call, no React re-render)
+                             └──> React state (status, latest, history) ──> panel components
+
+Panel controls ──> App state (mode, styles) ──> VisualizerStage props ──> renderer.setStyle()
 ```
 
-### 2. Connect to a DOA WebSocket source
+### Design decisions
 
-By default, the page connects to:
+- **React owns the UI, Three.js owns the canvas.** React renders an empty `<div>`, and `VisualizerStage` lets a Three.js renderer draw into it via a ref. The render loop runs in `requestAnimationFrame`, outside React, so the 60 fps animation never waits on React re-renders.
+- **One small interface between the two worlds.** Every renderer implements `OrbRenderer` (`update`, `setStyle`, `dispose`). React does not know anything about meshes or materials, and adding a fifth mode means writing one new file and one line in `renderers/index.ts`.
+- **Clean mount and unmount.** Switching modes runs the `useEffect` cleanup, which stops the animation loop, disposes geometries, materials and controls, and removes the canvas. The old version reloaded the whole page for this.
+- **Controlled components.** Style values live in `App` state. `StyleControls` only displays them and reports changes, so the UI and the 3D scene can never disagree.
+- **Typed messages.** Incoming JSON is validated once in `parseDoaMessage` and turned into a typed `DoaData`, so the rest of the code can trust its shape.
 
-```text
-ws://192.168.1.217:8765
-```
+## Limitations
 
-If your DOA server is running at a different address, you can override it through the URL:
+- Full real-time testing needs the real DOA backend. The mock server sends random directions in 4 s bursts with 3 s pauses.
+- The visual response depends on the scale of incoming `volume` values (`VOLUME_SCALE = 0.001`).
+- There are no automated tests yet.
 
-```text
-http://localhost:8080/?ws=ws://localhost:9000
-```
+## Context
 
-### 3. Choose a visualization mode
+Part of a sound localization project using a four-microphone array and Furhat. This frontend receives DOA output and presents it as interactive visual feedback for testing, demos and analysis.
 
-You can switch modes from the UI or by URL:
-
-```text
-http://localhost:8080/?orbStyle=faces
-http://localhost:8080/?orbStyle=wireframe
-http://localhost:8080/?orbStyle=arrow
-http://localhost:8080/?orbStyle=furhat
-```
-
-You can also combine both parameters:
-
-```text
-http://localhost:8080/?orbStyle=faces&ws=ws://localhost:9000
-```
-
-## Local mock testing
-
-If you want to test the frontend without the real DOA backend, run:
-
-```bash
-cd <repo-root>
-npm run mock
-```
-
-This starts a mock WebSocket server at:
-
-```text
-ws://localhost:9000
-```
-
-Then open:
-
-```text
-http://localhost:8080/?ws=ws://localhost:9000
-```
-
-Note: the current mock server is mainly intended to validate WebSocket connectivity and frontend updates. The real backend is still the correct source for testing the full `volume`-driven visual response.
-
-## Reproducing the full demo
-
-To reproduce the intended workflow:
-
-1. Start the real DOA backend so it exposes a WebSocket endpoint.
-2. Start the static server for this repository.
-3. Open the webpage and confirm that the left panel shows `Connected`.
-4. Verify that the latest payload is updating with `x`, `y`, `z`, and `volume`.
-5. Switch between visualization modes to inspect how the same DOA data is represented.
-
-## Interface features
-
-The current interface includes:
-
-- live WebSocket connection status
-- latest raw DOA payload display
-- mode switching between four visualization styles
-- style customization for `faces`, `wireframe`, and `arrow`
-- a left-right layout that keeps the control panel separate from the main 3D visualization
-
-## Current limitations
-
-- the project currently depends on a running DOA WebSocket server for full real-time testing
-- the mock server is lightweight and does not fully represent the real backend behavior
-- the exact visual response depends on the scale of the incoming `volume` values
-- there is no build, lint, or automated test pipeline yet
-
-## Authors and context
-
-This repository is part of a sound localization visualization project using a four-microphone array and a 3D web interface. The frontend is responsible for receiving DOA output and presenting it as interactive visual feedback for testing, demonstration, and analysis.
+A Chinese walkthrough of the React structure is in [`docs/REACT_GUIDE_zh.md`](docs/REACT_GUIDE_zh.md).
